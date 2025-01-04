@@ -18,7 +18,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::Fourcc;
-use smithay::backend::drm::compositor::{DrmCompositor, PrimaryPlaneElement};
+use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement};
 use smithay::backend::drm::{
     DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType, VrrSupport,
 };
@@ -64,7 +64,12 @@ use crate::render_helpers::renderer::AsGlesRenderer;
 use crate::render_helpers::{resources, shaders, RenderTarget};
 use crate::utils::{get_monotonic_time, is_laptop_panel, logical_output};
 
-const SUPPORTED_COLOR_FORMATS: &[Fourcc] = &[Fourcc::Argb8888, Fourcc::Abgr8888];
+const SUPPORTED_COLOR_FORMATS: [Fourcc; 4] = [
+    Fourcc::Xrgb8888,
+    Fourcc::Xbgr8888,
+    Fourcc::Argb8888,
+    Fourcc::Abgr8888,
+];
 
 pub struct Tty {
     config: Rc<RefCell<Config>>,
@@ -118,7 +123,7 @@ pub struct OutputDevice {
     render_node: DrmNode,
     drm_scanner: DrmScanner,
     surfaces: HashMap<crtc::Handle, Surface>,
-    output_ids: HashMap<crtc::Handle, OutputId>,
+    known_crtcs: HashMap<crtc::Handle, CrtcInfo>,
     // SAFETY: drop after all the objects used with them are dropped.
     // See https://github.com/Smithay/smithay/issues/1102.
     drm: DrmDevice,
@@ -127,6 +132,13 @@ pub struct OutputDevice {
     pub drm_lease_state: Option<DrmLeaseState>,
     non_desktop_connectors: HashSet<(connector::Handle, crtc::Handle)>,
     active_leases: Vec<DrmLease>,
+}
+
+// A connected, but not necessarily enabled, crtc.
+#[derive(Debug, Clone)]
+pub struct CrtcInfo {
+    id: OutputId,
+    name: OutputName,
 }
 
 impl OutputDevice {
@@ -167,6 +179,35 @@ impl OutputDevice {
 
     pub fn remove_lease(&mut self, lease_id: u32) {
         self.active_leases.retain(|l| l.id() != lease_id);
+    }
+
+    pub fn known_crtc_name(
+        &self,
+        crtc: &crtc::Handle,
+        conn: &connector::Info,
+        disable_monitor_names: bool,
+    ) -> OutputName {
+        if disable_monitor_names {
+            let conn_name = format_connector_name(conn);
+            return OutputName {
+                connector: conn_name,
+                make: None,
+                model: None,
+                serial: None,
+            };
+        }
+
+        let Some(info) = self.known_crtcs.get(crtc) else {
+            let conn_name = format_connector_name(conn);
+            error!("crtc for connector {conn_name} missing from known");
+            return OutputName {
+                connector: conn_name,
+                make: None,
+                model: None,
+                serial: None,
+            };
+        };
+        info.name.clone()
     }
 }
 
@@ -567,7 +608,7 @@ impl Tty {
             gbm,
             drm_scanner: DrmScanner::new(),
             surfaces: HashMap::new(),
-            output_ids: HashMap::new(),
+            known_crtcs: HashMap::new(),
             drm_lease_state,
             active_leases: Vec::new(),
             non_desktop_connectors: HashSet::new(),
@@ -608,16 +649,37 @@ impl Tty {
                     crtc: Some(crtc),
                 } => {
                     let connector_name = format_connector_name(&connector);
-                    let output_name =
-                        make_output_name(&device.drm, connector.handle(), connector_name, false);
+                    let mut name =
+                        make_output_name(&device.drm, connector.handle(), connector_name);
                     debug!(
                         "new connector: {} \"{}\"",
-                        &output_name.connector,
-                        output_name.format_make_model_serial(),
+                        &name.connector,
+                        name.format_make_model_serial(),
                     );
 
+                    // Make/model/serial can match exactly between different physical monitors. This
+                    // doesn't happen often, but our Layout does not support such duplicates and
+                    // will panic.
+                    //
+                    // As a workaround, search for duplicates, and unname the current connector if
+                    // one is found. Connector names are always unique.
+                    let formatted = name.format_make_model_serial_or_connector();
+                    for info in device.known_crtcs.values() {
+                        if info.name.matches(&formatted) {
+                            warn!("connector make/model/serial duplicates existing, unnaming");
+                            name = OutputName {
+                                connector: name.connector,
+                                make: None,
+                                model: None,
+                                serial: None,
+                            };
+                            break;
+                        }
+                    }
+
                     // Assign an id to this crtc.
-                    device.output_ids.insert(crtc, OutputId::next());
+                    let id = OutputId::next();
+                    device.known_crtcs.insert(crtc, CrtcInfo { id, name });
                 }
                 DrmScanEvent::Disconnected {
                     crtc: Some(crtc), ..
@@ -638,7 +700,7 @@ impl Tty {
         };
 
         for crtc in removed {
-            if device.output_ids.remove(&crtc).is_none() {
+            if device.known_crtcs.remove(&crtc).is_none() {
                 error!("output ID missing for disconnected crtc: {crtc:?}");
             }
         }
@@ -734,12 +796,8 @@ impl Tty {
 
         let device = self.devices.get_mut(&node).context("missing device")?;
 
-        let output_name = make_output_name(
-            &device.drm,
-            connector.handle(),
-            connector_name.clone(),
-            self.config.borrow().debug.disable_monitor_names,
-        );
+        let disable_monitor_names = self.config.borrow().debug.disable_monitor_names;
+        let output_name = device.known_crtc_name(&crtc, &connector, disable_monitor_names);
 
         let non_desktop = find_drm_property(&device.drm, connector.handle(), "non-desktop")
             .and_then(|(_, info, value)| info.value_type().convert_value(value).as_boolean())
@@ -861,23 +919,6 @@ impl Tty {
             .insert_if_missing(|| TtyOutputState { node, crtc });
         output.user_data().insert_if_missing(|| output_name.clone());
 
-        let mut planes = surface.planes().clone();
-
-        let config = self.config.borrow();
-
-        // Overlay planes are disabled by default as they cause weird performance issues on my
-        // system.
-        if !config.debug.enable_overlay_planes {
-            planes.overlay.clear();
-        }
-
-        // Cursor planes have bugs on some systems.
-        let cursor_plane_gbm = if config.debug.disable_cursor_plane {
-            None
-        } else {
-            Some(device.gbm.clone())
-        };
-
         let renderer = self.gpu_manager.single_renderer(&device.render_node)?;
         let egl_context = renderer.as_ref().egl_context();
         let render_formats = egl_context.dmabuf_render_formats();
@@ -916,7 +957,7 @@ impl Tty {
         let res = DrmCompositor::new(
             OutputModeSource::Auto(output.clone()),
             surface,
-            Some(planes),
+            None,
             allocator.clone(),
             device.gbm.clone(),
             SUPPORTED_COLOR_FORMATS,
@@ -924,7 +965,7 @@ impl Tty {
             // formats, even though we only ever render on the primary GPU.
             render_formats.clone(),
             device.drm.cursor_size(),
-            cursor_plane_gbm.clone(),
+            Some(device.gbm.clone()),
         );
 
         let mut compositor = match res {
@@ -942,21 +983,17 @@ impl Tty {
                 let surface = device
                     .drm
                     .create_surface(crtc, mode, &[connector.handle()])?;
-                let mut planes = surface.planes().clone();
-                if !config.debug.enable_overlay_planes {
-                    planes.overlay.clear();
-                }
 
                 DrmCompositor::new(
                     OutputModeSource::Auto(output.clone()),
                     surface,
-                    Some(planes),
+                    None,
                     allocator,
                     device.gbm.clone(),
                     SUPPORTED_COLOR_FORMATS,
                     render_formats,
                     device.drm.cursor_size(),
-                    cursor_plane_gbm,
+                    Some(device.gbm.clone()),
                 )
                 .context("error creating DRM compositor")?
             }
@@ -965,7 +1002,6 @@ impl Tty {
         if self.debug_tint {
             compositor.set_debug_flags(DebugFlags::TINT);
         }
-        compositor.use_direct_scanout(!config.debug.disable_direct_scanout);
 
         let mut dmabuf_feedback = None;
         if let Ok(primary_renderer) = self.gpu_manager.single_renderer(&self.primary_render_node) {
@@ -1351,9 +1387,35 @@ impl Tty {
             draw_damage(&mut output_state.debug_damage_tracker, &mut elements);
         }
 
+        // Overlay planes are disabled by default as they cause weird performance issues on my
+        // system.
+        let flags = {
+            let debug = &self.config.borrow().debug;
+
+            let primary_scanout_flag = if debug.restrict_primary_scanout_to_matching_format {
+                FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
+            } else {
+                FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY
+            };
+            let mut flags = primary_scanout_flag | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+
+            if debug.enable_overlay_planes {
+                flags.insert(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
+            }
+            if debug.disable_direct_scanout {
+                flags.remove(primary_scanout_flag);
+                flags.remove(FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT);
+            }
+            if debug.disable_cursor_plane {
+                flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
+            }
+
+            flags
+        };
+
         // Hand them over to the DRM.
         let drm_compositor = &mut surface.compositor;
-        match drm_compositor.render_frame::<_, _>(&mut renderer, &elements, [0.; 4]) {
+        match drm_compositor.render_frame::<_, _>(&mut renderer, &elements, [0.; 4], flags) {
             Ok(res) => {
                 let needs_sync = res.needs_sync()
                     || self
@@ -1534,17 +1596,13 @@ impl Tty {
         let _span = tracy_client::span!("Tty::refresh_ipc_outputs");
 
         let mut ipc_outputs = HashMap::new();
+        let disable_monitor_names = self.config.borrow().debug.disable_monitor_names;
 
         for (node, device) in &self.devices {
             for (connector, crtc) in device.drm_scanner.crtcs() {
                 let connector_name = format_connector_name(connector);
                 let physical_size = connector.size();
-                let output_name = make_output_name(
-                    &device.drm,
-                    connector.handle(),
-                    connector_name.clone(),
-                    self.config.borrow().debug.disable_monitor_names,
-                );
+                let output_name = device.known_crtc_name(&crtc, connector, disable_monitor_names);
 
                 let surface = device.surfaces.get(&crtc);
                 let current_crtc_mode = surface.map(|surface| surface.compositor.pending_mode());
@@ -1600,6 +1658,12 @@ impl Tty {
                     })
                     .map(logical_output);
 
+                let id = device.known_crtcs.get(&crtc).map(|info| info.id);
+                let id = id.unwrap_or_else(|| {
+                    error!("crtc for connector {connector_name} missing from known");
+                    OutputId::next()
+                });
+
                 let ipc_output = niri_ipc::Output {
                     name: connector_name,
                     make: output_name.make.unwrap_or_else(|| "Unknown".into()),
@@ -1613,10 +1677,6 @@ impl Tty {
                     logical,
                 };
 
-                let id = device.output_ids.get(&crtc).copied().unwrap_or_else(|| {
-                    error!("output ID missing for crtc: {crtc:?}");
-                    OutputId::next()
-                });
                 ipc_outputs.insert(id, ipc_output);
             }
         }
@@ -1829,6 +1889,9 @@ impl Tty {
                 }
             }
 
+            let config = self.config.borrow();
+            let disable_monitor_names = config.debug.disable_monitor_names;
+
             for (connector, crtc) in device.drm_scanner.crtcs() {
                 // Check if connected.
                 if connector.state() != connector::State::Connected {
@@ -1844,16 +1907,9 @@ impl Tty {
                     continue;
                 }
 
-                let connector_name = format_connector_name(connector);
-                let output_name = make_output_name(
-                    &device.drm,
-                    connector.handle(),
-                    connector_name,
-                    self.config.borrow().debug.disable_monitor_names,
-                );
-                let config = self
-                    .config
-                    .borrow()
+                let output_name = device.known_crtc_name(&crtc, connector, disable_monitor_names);
+
+                let config = config
                     .outputs
                     .find(&output_name)
                     .cloned()
@@ -1882,24 +1938,12 @@ impl Tty {
         self.refresh_ipc_outputs(niri);
     }
 
-    pub fn on_debug_config_changed(&mut self) {
-        let config = self.config.borrow();
-        let debug = &config.debug;
-        let use_direct_scanout = !debug.disable_direct_scanout;
-
-        // FIXME: reload other flags if possible?
-        for device in self.devices.values_mut() {
-            for surface in device.surfaces.values_mut() {
-                surface.compositor.use_direct_scanout(use_direct_scanout);
-            }
-        }
-    }
-
     pub fn get_device_from_node(&mut self, node: DrmNode) -> Option<&mut OutputDevice> {
         self.devices.get_mut(&node)
     }
 
     pub fn disconnected_connector_name_by_name_match(&self, target: &str) -> Option<OutputName> {
+        let disable_monitor_names = self.config.borrow().debug.disable_monitor_names;
         for device in self.devices.values() {
             for (connector, crtc) in device.drm_scanner.crtcs() {
                 // Check if connected.
@@ -1916,13 +1960,7 @@ impl Tty {
                     continue;
                 }
 
-                let connector_name = format_connector_name(connector);
-                let output_name = make_output_name(
-                    &device.drm,
-                    connector.handle(),
-                    connector_name,
-                    self.config.borrow().debug.disable_monitor_names,
-                );
+                let output_name = device.known_crtc_name(&crtc, connector, disable_monitor_names);
                 if output_name.matches(target) {
                     return Some(output_name);
                 }
@@ -2117,9 +2155,8 @@ fn surface_dmabuf_feedback(
     let surface = compositor.surface();
     let planes = surface.planes();
 
-    let plane_formats = surface
-        .plane_info()
-        .formats
+    let primary_plane_formats = surface.plane_info().formats.clone();
+    let primary_or_overlay_plane_formats = primary_plane_formats
         .iter()
         .chain(planes.overlay.iter().flat_map(|p| p.formats.iter()))
         .copied()
@@ -2127,7 +2164,11 @@ fn surface_dmabuf_feedback(
 
     // We limit the scan-out trache to formats we can also render from so that there is always a
     // fallback render path available in case the supplied buffer can not be scanned out directly.
-    let mut scanout_formats = plane_formats
+    let mut primary_scanout_formats = primary_plane_formats
+        .intersection(&primary_formats)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut primary_or_overlay_scanout_formats = primary_or_overlay_plane_formats
         .intersection(&primary_formats)
         .copied()
         .collect::<Vec<_>>();
@@ -2135,17 +2176,32 @@ fn surface_dmabuf_feedback(
     // HACK: AMD iGPU + dGPU systems share some modifiers between the two, and yet cross-device
     // buffers produce a glitched scanout if the modifier is not Linear...
     if primary_render_node != surface_render_node {
-        scanout_formats.retain(|f| f.modifier == Modifier::Linear);
+        primary_scanout_formats.retain(|f| f.modifier == Modifier::Linear);
+        primary_or_overlay_scanout_formats.retain(|f| f.modifier == Modifier::Linear);
     }
 
     let builder = DmabufFeedbackBuilder::new(primary_render_node.dev_id(), primary_formats);
 
+    trace!(
+        "primary scanout formats: {}, overlay adds: {}",
+        primary_scanout_formats.len(),
+        primary_or_overlay_scanout_formats.len() - primary_scanout_formats.len(),
+    );
+
+    // Prefer the primary-plane-only formats, then primary-or-overlay-plane formats. This will
+    // increase the chance of scanning out a client even with our disabled-by-default overlay
+    // planes.
     let scanout = builder
         .clone()
         .add_preference_tranche(
             surface_render_node.dev_id(),
             Some(TrancheFlags::Scanout),
-            scanout_formats,
+            primary_scanout_formats,
+        )
+        .add_preference_tranche(
+            surface_render_node.dev_id(),
+            Some(TrancheFlags::Scanout),
+            primary_or_overlay_scanout_formats,
         )
         .build()?;
 
@@ -2465,17 +2521,7 @@ fn make_output_name(
     device: &DrmDevice,
     connector: connector::Handle,
     connector_name: String,
-    disable_monitor_names: bool,
 ) -> OutputName {
-    if disable_monitor_names {
-        return OutputName {
-            connector: connector_name,
-            make: None,
-            model: None,
-            serial: None,
-        };
-    }
-
     let info = get_edid_info(device, connector)
         .map_err(|err| warn!("error getting EDID info for {connector_name}: {err:?}"))
         .ok();

@@ -307,20 +307,20 @@ pub fn center_preferring_top_left_in_area(
 }
 
 #[cfg(feature = "dbus")]
-pub fn show_screenshot_notification(image_path: Option<PathBuf>) {
-    let mut notification = notify_rust::Notification::new();
-    notification
-        .summary("Screenshot captured")
-        .body("You can paste the image from the clipboard.")
-        .urgency(notify_rust::Urgency::Normal)
-        .hint(notify_rust::Hint::Transient(true));
+pub fn show_screenshot_notification(image_path: Option<PathBuf>) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    use zbus::zvariant;
+
+    let conn = zbus::blocking::Connection::session()?;
 
     // Try to add the screenshot as an image if possible.
+    let mut image_url = None;
     if let Some(path) = image_path {
         match path.canonicalize() {
             Ok(path) => match url::Url::from_file_path(path) {
                 Ok(url) => {
-                    notification.image_path(url.as_str());
+                    image_url = Some(url);
                 }
                 Err(err) => {
                     warn!("error converting screenshot path to file url: {err:?}");
@@ -332,9 +332,29 @@ pub fn show_screenshot_notification(image_path: Option<PathBuf>) {
         }
     }
 
-    if let Err(err) = notification.show() {
-        warn!("error showing screenshot notification: {err:?}");
-    }
+    let actions: &[&str] = &[];
+
+    conn.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "Notify",
+        &(
+            "niri",
+            0u32,
+            image_url.as_ref().map(|url| url.as_str()).unwrap_or(""),
+            "Screenshot captured",
+            "You can paste the image from the clipboard.",
+            actions,
+            HashMap::from([
+                ("transient", zvariant::Value::Bool(true)),
+                ("urgency", zvariant::Value::U8(1)),
+            ]),
+            -1,
+        ),
+    )?;
+
+    Ok(())
 }
 
 #[inline(never)]
@@ -355,8 +375,8 @@ mod tests {
             (rx, ry, rw, rh): (i32, i32, i32, i32),
             (ex, ey): (i32, i32),
         ) {
-            let area = Rectangle::from_loc_and_size((ax, ay), (aw, ah)).to_f64();
-            let mut rect = Rectangle::from_loc_and_size((rx, ry), (rw, rh)).to_f64();
+            let area = Rectangle::new(Point::from((ax, ay)), Size::from((aw, ah))).to_f64();
+            let mut rect = Rectangle::new(Point::from((rx, ry)), Size::from((rw, rh))).to_f64();
             clamp_preferring_top_left_in_area(area, &mut rect);
             assert_eq!(rect.loc, Point::from((ex, ey)).to_f64());
         }

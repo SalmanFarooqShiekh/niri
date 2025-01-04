@@ -289,6 +289,7 @@ impl XdgShellHandler for State {
 
         let popup = PopupKind::Xdg(surface);
         let Ok(root) = find_popup_root_surface(&popup) else {
+            trace!("ignoring popup grab because no root surface");
             return;
         };
 
@@ -297,30 +298,30 @@ impl XdgShellHandler for State {
         // keyboard focus being at the wrong place.
         if self.niri.is_locked() {
             if Some(&root) != self.niri.lock_surface_focus().as_ref() {
+                trace!("ignoring popup grab because the session is locked");
                 let _ = PopupManager::dismiss_popup(&root, &popup);
                 return;
             }
         } else if self.niri.screenshot_ui.is_open() {
+            trace!("ignoring popup grab because the screenshot UI is open");
             let _ = PopupManager::dismiss_popup(&root, &popup);
             return;
         } else if let Some(output) = self.niri.layout.active_output() {
             let layers = layer_map_for_output(output);
 
-            if let Some(layer_surface) =
-                layers.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+            if layers
+                .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                .is_none()
             {
-                if !matches!(layer_surface.layer(), Layer::Overlay | Layer::Top) {
-                    let _ = PopupManager::dismiss_popup(&root, &popup);
-                    return;
-                }
+                // This is a grab for a regular window; check that there's no layer surface with a
+                // higher input priority.
 
-                // FIXME: popup grabs for on-demand bottom and background layers.
-            } else {
                 if layers.layers_on(Layer::Overlay).any(|l| {
                     l.cached_state().keyboard_interactivity
                         == wlr_layer::KeyboardInteractivity::Exclusive
                         || Some(l) == self.niri.layer_shell_on_demand_focus.as_ref()
                 }) {
+                    trace!("ignoring toplevel popup grab because the overlay layer has focus");
                     let _ = PopupManager::dismiss_popup(&root, &popup);
                     return;
                 }
@@ -333,32 +334,50 @@ impl XdgShellHandler for State {
                             || Some(l) == self.niri.layer_shell_on_demand_focus.as_ref()
                     })
                 {
+                    trace!("ignoring toplevel popup grab because the top layer has focus");
                     let _ = PopupManager::dismiss_popup(&root, &popup);
                     return;
                 }
 
                 let layout_focus = self.niri.layout.focus();
                 if Some(&root) != layout_focus.map(|win| win.toplevel().wl_surface()) {
+                    trace!("ignoring toplevel popup grab because another window has focus");
                     let _ = PopupManager::dismiss_popup(&root, &popup);
                     return;
                 }
             }
         } else {
+            trace!("ignoring popup grab because no output is active");
             let _ = PopupManager::dismiss_popup(&root, &popup);
             return;
         }
 
         let seat = &self.niri.seat;
-        let Ok(mut grab) = self
+        let mut grab = match self
             .niri
             .popups
             .grab_popup(root.clone(), popup, seat, serial)
-        else {
-            return;
+        {
+            Ok(grab) => grab,
+            Err(err) => {
+                trace!("ignoring popup grab: {err:?}");
+                return;
+            }
         };
 
         let keyboard = seat.get_keyboard().unwrap();
         let pointer = seat.get_pointer().unwrap();
+
+        let can_receive_keyboard_focus = self
+            .niri
+            .layout
+            .active_output()
+            .and_then(|output| {
+                layer_map_for_output(output)
+                    .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)
+                    .map(|layer_surface| layer_surface.can_receive_keyboard_focus())
+            })
+            .unwrap_or(true);
 
         let keyboard_grab_mismatches = keyboard.is_grabbed()
             && !(keyboard.has_grab(serial)
@@ -368,16 +387,22 @@ impl XdgShellHandler for State {
         let pointer_grab_mismatches = pointer.is_grabbed()
             && !(pointer.has_grab(serial)
                 || grab.previous_serial().map_or(true, |s| pointer.has_grab(s)));
-        if keyboard_grab_mismatches || pointer_grab_mismatches {
+        if (can_receive_keyboard_focus && keyboard_grab_mismatches) || pointer_grab_mismatches {
+            trace!("ignoring popup grab because of current grab mismatch");
             grab.ungrab(PopupUngrabStrategy::All);
             return;
         }
 
         trace!("new grab for root {:?}", root);
-        keyboard.set_focus(self, grab.current_grab(), serial);
-        keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        if can_receive_keyboard_focus {
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+        }
         pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
-        self.niri.popup_grab = Some(PopupGrabState { root, grab });
+        self.niri.popup_grab = Some(PopupGrabState {
+            root,
+            grab,
+            has_keyboard_grab: can_receive_keyboard_focus,
+        });
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
@@ -1025,7 +1050,7 @@ impl State {
 
         // The target geometry for the positioner should be relative to its parent's geometry, so
         // we will compute that here.
-        let mut target = Rectangle::from_loc_and_size((0, 0), output_geo.size);
+        let mut target = Rectangle::from_size(output_geo.size);
         target.loc -= layer_geo.loc;
         target.loc -= get_popup_toplevel_coords(popup);
 

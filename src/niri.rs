@@ -1,4 +1,4 @@
-use std::cell::{Cell, LazyCell, OnceCell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -116,7 +116,8 @@ use crate::frame_clock::FrameClock;
 use crate::handlers::{configure_lock_surface, XDG_ACTIVATION_TOKEN_TIMEOUT};
 use crate::input::scroll_tracker::ScrollTracker;
 use crate::input::{
-    apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_wheel_binds, TabletData,
+    apply_libinput_settings, mods_with_finger_scroll_binds, mods_with_mouse_binds,
+    mods_with_wheel_binds, TabletData,
 };
 use crate::ipc::server::IpcServer;
 use crate::layer::mapped::LayerSurfaceRenderElement;
@@ -139,7 +140,7 @@ use crate::render_helpers::renderer::NiriRenderer;
 use crate::render_helpers::texture::TextureBuffer;
 use crate::render_helpers::{
     render_to_dmabuf, render_to_encompassing_texture, render_to_shm, render_to_texture,
-    render_to_vec, shaders, RenderTarget,
+    render_to_vec, shaders, RenderTarget, SplitElements,
 };
 use crate::ui::config_error_notification::ConfigErrorNotification;
 use crate::ui::exit_confirm_dialog::ExitConfirmDialog;
@@ -192,6 +193,9 @@ pub struct Niri {
     // This space does not actually contain any windows, but all outputs are mapped into it
     // according to their global position.
     pub global_space: Space<Window>,
+
+    /// Mapped outputs, sorted by their name and position.
+    pub sorted_outputs: Vec<Output>,
 
     // Windows which don't have a buffer attached yet.
     pub unmapped_windows: HashMap<WlSurface, Unmapped>,
@@ -277,6 +281,8 @@ pub struct Niri {
     pub seat: Seat<State>,
     /// Scancodes of the keys to suppress.
     pub suppressed_keys: HashSet<Keycode>,
+    /// Button codes of the mouse buttons to suppress.
+    pub suppressed_buttons: HashSet<u32>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
     pub keyboard_focus: KeyboardFocus,
@@ -313,6 +319,7 @@ pub struct Niri {
     pub gesture_swipe_3f_cumulative: Option<(f64, f64)>,
     pub vertical_wheel_tracker: ScrollTracker,
     pub horizontal_wheel_tracker: ScrollTracker,
+    pub mods_with_mouse_binds: HashSet<Modifiers>,
     pub mods_with_wheel_binds: HashSet<Modifiers>,
     pub vertical_finger_scroll_tracker: ScrollTracker,
     pub horizontal_finger_scroll_tracker: ScrollTracker,
@@ -338,7 +345,9 @@ pub struct Niri {
 
     // Casts are dropped before PipeWire to prevent a double-free (yay).
     pub casts: Vec<Cast>,
-    pub pipewire: LazyCell<Option<PipeWire>, Box<dyn FnOnce() -> Option<PipeWire>>>,
+    pub pipewire: Option<PipeWire>,
+    #[cfg(feature = "xdp-gnome-screencast")]
+    pub pw_to_niri: calloop::channel::Sender<PwToNiri>,
 
     // Screencast output for each mapped window.
     #[cfg(feature = "xdp-gnome-screencast")]
@@ -409,6 +418,7 @@ pub enum RedrawState {
 pub struct PopupGrabState {
     pub root: WlSurface,
     pub grab: PopupGrab<State>,
+    pub has_keyboard_grab: bool,
 }
 
 // The surfaces here are always toplevel surfaces focused as far as niri's logic is concerned, even
@@ -865,7 +875,7 @@ impl State {
             let layer_grab = self.niri.popup_grab.as_ref().and_then(|g| {
                 layers
                     .layer_for_surface(&g.root, WindowSurfaceType::TOPLEVEL)
-                    .map(|l| (&g.root, l.layer()))
+                    .and_then(|l| l.can_receive_keyboard_focus().then(|| (&g.root, l.layer())))
             });
             let grab_on_layer = |layer: Layer| {
                 layer_grab
@@ -912,20 +922,27 @@ impl State {
             // fullscreen layout window. This will need tracking in grab() to avoid handing it out
             // in the first place. Or a better way to structure this code.
             surface = surface.or_else(|| grab_on_layer(Layer::Top));
+            surface = surface.or_else(|| grab_on_layer(Layer::Bottom));
+            surface = surface.or_else(|| grab_on_layer(Layer::Background));
 
             surface = surface.or_else(|| focus_on_layer(Layer::Overlay));
 
             if mon.render_above_top_layer() {
                 surface = surface.or_else(layout_focus);
                 surface = surface.or_else(|| focus_on_layer(Layer::Top));
+                surface = surface.or_else(|| focus_on_layer(Layer::Bottom));
+                surface = surface.or_else(|| focus_on_layer(Layer::Background));
             } else {
                 surface = surface.or_else(|| focus_on_layer(Layer::Top));
+                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Bottom));
+                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Background));
                 surface = surface.or_else(layout_focus);
-            }
 
-            // Bottom and background layers can receive on-demand focus only.
-            surface = surface.or_else(|| on_d_focus_on_layer(Layer::Bottom));
-            surface = surface.or_else(|| on_d_focus_on_layer(Layer::Background));
+                // Bottom and background layers can only receive exclusive focus when there are no
+                // layout windows.
+                surface = surface.or_else(|| excl_focus_on_layer(Layer::Bottom));
+                surface = surface.or_else(|| excl_focus_on_layer(Layer::Background));
+            }
 
             surface.unwrap_or(KeyboardFocus::Layout { surface: None })
         } else {
@@ -984,7 +1001,7 @@ impl State {
             }
 
             if let Some(grab) = self.niri.popup_grab.as_mut() {
-                if Some(&grab.root) != focus.surface() {
+                if grab.has_keyboard_grab && Some(&grab.root) != focus.surface() {
                     trace!(
                         "grab root {:?} is not the new focus {:?}, ungrabbing",
                         grab.root,
@@ -1092,7 +1109,6 @@ impl State {
         let mut preserved_output_config = None;
         let mut window_rules_changed = false;
         let mut layer_rules_changed = false;
-        let mut debug_config_changed = false;
         let mut shaders_changed = false;
         let mut cursor_inactivity_timeout_changed = false;
         let mut old_config = self.niri.config.borrow_mut();
@@ -1141,6 +1157,8 @@ impl State {
 
         if config.binds != old_config.binds {
             self.niri.hotkey_overlay.on_hotkey_config_updated();
+            self.niri.mods_with_mouse_binds =
+                mods_with_mouse_binds(self.backend.mod_key(), &config.binds);
             self.niri.mods_with_wheel_binds =
                 mods_with_wheel_binds(self.backend.mod_key(), &config.binds);
             self.niri.mods_with_finger_scroll_binds =
@@ -1189,14 +1207,10 @@ impl State {
             cursor_inactivity_timeout_changed = true;
         }
 
-        if config.debug != old_config.debug {
-            debug_config_changed = true;
-
-            if config.debug.keep_laptop_panel_on_when_lid_is_closed
-                != old_config.debug.keep_laptop_panel_on_when_lid_is_closed
-            {
-                output_config_changed = true;
-            }
+        if config.debug.keep_laptop_panel_on_when_lid_is_closed
+            != old_config.debug.keep_laptop_panel_on_when_lid_is_closed
+        {
+            output_config_changed = true;
         }
 
         *old_config = config;
@@ -1227,10 +1241,6 @@ impl State {
 
         if output_config_changed {
             self.reload_output_config();
-        }
-
-        if debug_config_changed {
-            self.backend.on_debug_config_changed();
         }
 
         if window_rules_changed {
@@ -1496,6 +1506,16 @@ impl State {
                     });
                 }
             },
+            PwToNiri::FatalError => {
+                warn!("stopping PipeWire due to fatal error");
+                if let Some(pw) = self.niri.pipewire.take() {
+                    let ids: Vec<_> = self.niri.casts.iter().map(|cast| cast.session_id).collect();
+                    for id in ids {
+                        self.niri.stop_cast(id);
+                    }
+                    self.niri.event_loop.remove(pw.token);
+                }
+            }
         }
     }
 
@@ -1525,10 +1545,19 @@ impl State {
                     }
                 };
 
-                let Some(pw) = &*self.niri.pipewire else {
-                    warn!("error starting screencast: PipeWire failed to initialize");
-                    self.niri.stop_cast(session_id);
-                    return;
+                let pw = if let Some(pw) = &self.niri.pipewire {
+                    pw
+                } else {
+                    match PipeWire::new(&self.niri.event_loop, self.niri.pw_to_niri.clone()) {
+                        Ok(pipewire) => self.niri.pipewire.insert(pipewire),
+                        Err(err) => {
+                            warn!(
+                                "error starting screencast: PipeWire failed to initialize: {err:?}"
+                            );
+                            self.niri.stop_cast(session_id);
+                            return;
+                        }
+                    }
                 };
 
                 let (target, size, refresh, alpha) = match target {
@@ -1845,6 +1874,7 @@ impl Niri {
         let cursor_manager =
             CursorManager::new(&config_.cursor.xcursor_theme, config_.cursor.xcursor_size);
 
+        let mods_with_mouse_binds = mods_with_mouse_binds(backend.mod_key(), &config_.binds);
         let mods_with_wheel_binds = mods_with_wheel_binds(backend.mod_key(), &config_.binds);
         let mods_with_finger_scroll_binds =
             mods_with_finger_scroll_binds(backend.mod_key(), &config_.binds);
@@ -1902,14 +1932,17 @@ impl Niri {
             }
         };
 
-        let loop_handle = event_loop.clone();
-        let pipewire = LazyCell::new(Box::new(move || match PipeWire::new(&loop_handle) {
-            Ok(pipewire) => Some(pipewire),
-            Err(err) => {
-                warn!("error connecting to PipeWire, screencasting will not work: {err:?}");
-                None
-            }
-        }) as _);
+        #[cfg(feature = "xdp-gnome-screencast")]
+        let pw_to_niri = {
+            let (pw_to_niri, from_pipewire) = calloop::channel::channel();
+            event_loop
+                .insert_source(from_pipewire, move |event, _, state| match event {
+                    calloop::channel::Event::Msg(msg) => state.on_pw_msg(msg),
+                    calloop::channel::Event::Closed => (),
+                })
+                .unwrap();
+            pw_to_niri
+        };
 
         let display_source = Generic::new(display, Interest::READ, Mode::Level);
         event_loop
@@ -1951,6 +1984,7 @@ impl Niri {
 
             layout,
             global_space: Space::default(),
+            sorted_outputs: Vec::default(),
             output_state: HashMap::new(),
             unmapped_windows: HashMap::new(),
             unmapped_layer_surfaces: HashSet::new(),
@@ -1997,6 +2031,7 @@ impl Niri {
             popups: PopupManager::default(),
             popup_grab: None,
             suppressed_keys: HashSet::new(),
+            suppressed_buttons: HashSet::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
             presentation_state,
@@ -2024,6 +2059,7 @@ impl Niri {
             gesture_swipe_3f_cumulative: None,
             vertical_wheel_tracker: ScrollTracker::new(120),
             horizontal_wheel_tracker: ScrollTracker::new(120),
+            mods_with_mouse_binds,
             mods_with_wheel_binds,
 
             // 10 is copied from Clutter: DISCRETE_SCROLL_STEP.
@@ -2049,8 +2085,10 @@ impl Niri {
             ipc_server,
             ipc_outputs_changed: false,
 
-            pipewire,
+            pipewire: None,
             casts: vec![],
+            #[cfg(feature = "xdp-gnome-screencast")]
+            pw_to_niri,
 
             #[cfg(feature = "xdp-gnome-screencast")]
             mapped_cast_output: HashMap::new(),
@@ -2067,7 +2105,7 @@ impl Niri {
 
         use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
 
-        let conn = zbus::blocking::ConnectionBuilder::system()?.build()?;
+        let conn = zbus::blocking::Connection::system()?;
 
         let message = conn.call_method(
             Some("org.freedesktop.login1"),
@@ -2077,7 +2115,7 @@ impl Niri {
             &("handle-power-key", "niri", "Power key handling", "block"),
         )?;
 
-        let fd: zbus::zvariant::OwnedFd = message.body()?;
+        let fd: zbus::zvariant::OwnedFd = message.body().deserialize()?;
 
         // Don't leak the fd to child processes.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd.as_raw_fd()) };
@@ -2138,6 +2176,11 @@ impl Niri {
             outputs.iter().map(|d| &d.name.connector)
         );
 
+        self.sorted_outputs = outputs
+            .iter()
+            .map(|Data { output, .. }| output.clone())
+            .collect();
+
         for data in outputs.into_iter() {
             let Data {
                 output,
@@ -2152,7 +2195,7 @@ impl Niri {
                 .map(|pos| Point::from((pos.x, pos.y)))
                 .filter(|pos| {
                     // Ensure that the requested position does not overlap any existing output.
-                    let target_geom = Rectangle::from_loc_and_size(*pos, size);
+                    let target_geom = Rectangle::new(*pos, size);
 
                     let overlap = self
                         .global_space
@@ -2441,27 +2484,42 @@ impl Niri {
 
         let (output, pos_within_output) = self.output_under(pos)?;
 
+        // The ordering here must be consistent with the ordering in render() so that input is
+        // consistent with the visuals.
+
         // Check if some layer-shell surface is on top.
         let layers = layer_map_for_output(output);
-        let layer_under = |layer| {
+        let layer_surface_under = |layer, popup| {
             layers
-                .layer_under(layer, pos_within_output)
-                .and_then(|layer| {
+                .layers_on(layer)
+                .rev()
+                .find_map(|layer| {
                     let layer_pos_within_output =
                         layers.layer_geometry(layer).unwrap().loc.to_f64();
-                    layer.surface_under(
-                        pos_within_output - layer_pos_within_output,
-                        WindowSurfaceType::ALL,
-                    )
+                    let surface_type = if popup {
+                        WindowSurfaceType::POPUP
+                    } else {
+                        WindowSurfaceType::TOPLEVEL
+                    } | WindowSurfaceType::SUBSURFACE;
+                    layer.surface_under(pos_within_output - layer_pos_within_output, surface_type)
                 })
                 .is_some()
         };
-        if layer_under(Layer::Overlay) {
+
+        let layer_toplevel_under = |layer| layer_surface_under(layer, false);
+        let layer_popup_under = |layer| layer_surface_under(layer, true);
+
+        if layer_popup_under(Layer::Overlay) || layer_toplevel_under(Layer::Overlay) {
             return None;
         }
 
         let mon = self.layout.monitor_for_output(output).unwrap();
-        if !mon.render_above_top_layer() && layer_under(Layer::Top) {
+        if !mon.render_above_top_layer()
+            && (layer_popup_under(Layer::Top)
+                || layer_popup_under(Layer::Bottom)
+                || layer_popup_under(Layer::Background)
+                || layer_toplevel_under(Layer::Top))
+        {
             return None;
         }
 
@@ -2493,6 +2551,9 @@ impl Niri {
         rv.output = Some(output.clone());
         let output_pos_in_global_space = self.global_space.output_geometry(output).unwrap().loc;
 
+        // The ordering here must be consistent with the ordering in render() so that input is
+        // consistent with the visuals.
+
         if self.is_locked() {
             let Some(state) = self.output_state.get(output) else {
                 return rv;
@@ -2523,17 +2584,20 @@ impl Niri {
         }
 
         let layers = layer_map_for_output(output);
-        let layer_surface_under = |layer| {
+        let layer_surface_under = |layer, popup| {
             layers
-                .layer_under(layer, pos_within_output)
-                .and_then(|layer| {
+                .layers_on(layer)
+                .rev()
+                .find_map(|layer| {
                     let layer_pos_within_output =
                         layers.layer_geometry(layer).unwrap().loc.to_f64();
+                    let surface_type = if popup {
+                        WindowSurfaceType::POPUP
+                    } else {
+                        WindowSurfaceType::TOPLEVEL
+                    } | WindowSurfaceType::SUBSURFACE;
                     layer
-                        .surface_under(
-                            pos_within_output - layer_pos_within_output,
-                            WindowSurfaceType::ALL,
-                        )
+                        .surface_under(pos_within_output - layer_pos_within_output, surface_type)
                         .map(|(surface, pos_within_layer)| {
                             (
                                 (surface, pos_within_layer.to_f64() + layer_pos_within_output),
@@ -2543,6 +2607,9 @@ impl Niri {
                 })
                 .map(|(s, l)| (s, (None, Some(l.clone()))))
         };
+
+        let layer_toplevel_under = |layer| layer_surface_under(layer, false);
+        let layer_popup_under = |layer| layer_surface_under(layer, true);
 
         let window_under = || {
             self.layout
@@ -2564,22 +2631,32 @@ impl Niri {
 
         let mon = self.layout.monitor_for_output(output).unwrap();
 
-        let mut under = layer_surface_under(Layer::Overlay);
+        let mut under =
+            layer_popup_under(Layer::Overlay).or_else(|| layer_toplevel_under(Layer::Overlay));
 
+        // When rendering above the top layer, we put the regular monitor elements first.
+        // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
             under = under
                 .or_else(window_under)
-                .or_else(|| layer_surface_under(Layer::Top));
+                .or_else(|| layer_popup_under(Layer::Top))
+                .or_else(|| layer_popup_under(Layer::Bottom))
+                .or_else(|| layer_popup_under(Layer::Background))
+                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(|| layer_toplevel_under(Layer::Bottom))
+                .or_else(|| layer_toplevel_under(Layer::Background));
         } else {
             under = under
-                .or_else(|| layer_surface_under(Layer::Top))
-                .or_else(window_under);
+                .or_else(|| layer_popup_under(Layer::Top))
+                .or_else(|| layer_popup_under(Layer::Bottom))
+                .or_else(|| layer_popup_under(Layer::Background))
+                .or_else(|| layer_toplevel_under(Layer::Top))
+                .or_else(window_under)
+                .or_else(|| layer_toplevel_under(Layer::Bottom))
+                .or_else(|| layer_toplevel_under(Layer::Background));
         }
 
-        let Some(((surface, surface_pos_within_output), (window, layer))) = under
-            .or_else(|| layer_surface_under(Layer::Bottom))
-            .or_else(|| layer_surface_under(Layer::Background))
-        else {
+        let Some(((surface, surface_pos_within_output), (window, layer))) = under else {
             return rv;
         };
 
@@ -2600,9 +2677,9 @@ impl Niri {
     pub fn output_left(&self) -> Option<Output> {
         let active = self.layout.active_output()?;
         let active_geo = self.global_space.output_geometry(active).unwrap();
-        let extended_geo = Rectangle::from_loc_and_size(
-            (i32::MIN / 2, active_geo.loc.y),
-            (i32::MAX, active_geo.size.h),
+        let extended_geo = Rectangle::new(
+            Point::from((i32::MIN / 2, active_geo.loc.y)),
+            Size::from((i32::MAX, active_geo.size.h)),
         );
 
         self.global_space
@@ -2617,9 +2694,9 @@ impl Niri {
     pub fn output_right(&self) -> Option<Output> {
         let active = self.layout.active_output()?;
         let active_geo = self.global_space.output_geometry(active).unwrap();
-        let extended_geo = Rectangle::from_loc_and_size(
-            (i32::MIN / 2, active_geo.loc.y),
-            (i32::MAX, active_geo.size.h),
+        let extended_geo = Rectangle::new(
+            Point::from((i32::MIN / 2, active_geo.loc.y)),
+            Size::from((i32::MAX, active_geo.size.h)),
         );
 
         self.global_space
@@ -2634,9 +2711,9 @@ impl Niri {
     pub fn output_up(&self) -> Option<Output> {
         let active = self.layout.active_output()?;
         let active_geo = self.global_space.output_geometry(active).unwrap();
-        let extended_geo = Rectangle::from_loc_and_size(
-            (active_geo.loc.x, i32::MIN / 2),
-            (active_geo.size.w, i32::MAX),
+        let extended_geo = Rectangle::new(
+            Point::from((active_geo.loc.x, i32::MIN / 2)),
+            Size::from((active_geo.size.w, i32::MAX)),
         );
 
         self.global_space
@@ -2645,6 +2722,31 @@ impl Niri {
             .filter(|(_, geo)| center(*geo).y < center(active_geo).y && geo.overlaps(extended_geo))
             .min_by_key(|(_, geo)| center(active_geo).y - center(*geo).y)
             .map(|(output, _)| output)
+            .cloned()
+    }
+
+    pub fn output_previous(&self) -> Option<Output> {
+        let active = self.layout.active_output()?;
+
+        self.sorted_outputs
+            .iter()
+            .rev()
+            .skip_while(|&output| output != active)
+            .nth(1)
+            .or(self.sorted_outputs.last())
+            .filter(|&output| output != active)
+            .cloned()
+    }
+
+    pub fn output_next(&self) -> Option<Output> {
+        let active = self.layout.active_output()?;
+
+        self.sorted_outputs
+            .iter()
+            .skip_while(|&output| output != active)
+            .nth(1)
+            .or(self.sorted_outputs.first())
+            .filter(|&output| output != active)
             .cloned()
     }
 
@@ -2670,9 +2772,9 @@ impl Niri {
     pub fn output_down(&self) -> Option<Output> {
         let active = self.layout.active_output()?;
         let active_geo = self.global_space.output_geometry(active).unwrap();
-        let extended_geo = Rectangle::from_loc_and_size(
-            (active_geo.loc.x, i32::MIN / 2),
-            (active_geo.size.w, i32::MAX),
+        let extended_geo = Rectangle::new(
+            Point::from((active_geo.loc.x, i32::MIN / 2)),
+            Size::from((active_geo.size.w, i32::MAX)),
         );
 
         self.global_space
@@ -3260,27 +3362,41 @@ impl Niri {
 
         // Get layer-shell elements.
         let layer_map = layer_map_for_output(output);
-        let mut extend_from_layer = |elements: &mut Vec<OutputRenderElements<R>>, layer| {
+        let mut extend_from_layer = |elements: &mut SplitElements<LayerSurfaceRenderElement<R>>,
+                                     layer| {
             self.render_layer(renderer, target, output_scale, &layer_map, layer, elements);
         };
 
-        // The upper layer-shell elements go next.
-        extend_from_layer(&mut elements, Layer::Overlay);
+        // The overlay layer elements go next.
+        let mut layer_elems = SplitElements::default();
+        extend_from_layer(&mut layer_elems, Layer::Overlay);
+        elements.extend(layer_elems.into_iter().map(OutputRenderElements::from));
 
-        // Then the regular monitor elements and the top layer in varying order.
+        // Collect all other layer-shell elements.
+        let mut layer_elems = SplitElements::default();
+        extend_from_layer(&mut layer_elems, Layer::Top);
+        let top_layer_normal = mem::take(&mut layer_elems.normal);
+        extend_from_layer(&mut layer_elems, Layer::Bottom);
+        extend_from_layer(&mut layer_elems, Layer::Background);
+
+        // When rendering above the top layer, we put the regular monitor elements first.
+        // Otherwise, we will render all layer-shell pop-ups and the top layer on top.
         if mon.render_above_top_layer() {
             elements.extend(float_elements.into_iter().map(OutputRenderElements::from));
             elements.extend(monitor_elements.into_iter().map(OutputRenderElements::from));
-            extend_from_layer(&mut elements, Layer::Top);
+
+            elements.extend(layer_elems.popups.drain(..).map(OutputRenderElements::from));
+            elements.extend(top_layer_normal.into_iter().map(OutputRenderElements::from));
+            elements.extend(layer_elems.normal.drain(..).map(OutputRenderElements::from));
         } else {
-            extend_from_layer(&mut elements, Layer::Top);
+            elements.extend(layer_elems.popups.drain(..).map(OutputRenderElements::from));
+            elements.extend(top_layer_normal.into_iter().map(OutputRenderElements::from));
+
             elements.extend(float_elements.into_iter().map(OutputRenderElements::from));
             elements.extend(monitor_elements.into_iter().map(OutputRenderElements::from));
-        }
 
-        // Then the lower layer-shell elements.
-        extend_from_layer(&mut elements, Layer::Bottom);
-        extend_from_layer(&mut elements, Layer::Background);
+            elements.extend(layer_elems.normal.drain(..).map(OutputRenderElements::from));
+        }
 
         // Then the background.
         elements.push(background);
@@ -3299,20 +3415,17 @@ impl Niri {
         scale: Scale<f64>,
         layer_map: &LayerMap,
         layer: Layer,
-        elements: &mut Vec<OutputRenderElements<R>>,
+        elements: &mut SplitElements<LayerSurfaceRenderElement<R>>,
     ) {
-        let iter = layer_map
-            .layers_on(layer)
-            .filter_map(|surface| {
-                let mapped = self.mapped_layer_surfaces.get(surface)?;
-                let geo = layer_map.layer_geometry(surface)?;
-                Some((mapped, geo))
-            })
-            .flat_map(|(mapped, geo)| {
-                let elements = mapped.render(renderer, geo, scale, target);
-                elements.into_iter().map(OutputRenderElements::LayerSurface)
-            });
-        elements.extend(iter);
+        // LayerMap returns layers in reverse stacking order.
+        let iter = layer_map.layers_on(layer).rev().filter_map(|surface| {
+            let mapped = self.mapped_layer_surfaces.get(surface)?;
+            let geo = layer_map.layer_geometry(surface)?;
+            Some((mapped, geo))
+        });
+        for (mapped, geo) in iter {
+            elements.extend(mapped.render(renderer, geo, scale, target));
+        }
     }
 
     fn redraw(&mut self, backend: &mut Backend, output: &Output) {
@@ -4294,7 +4407,7 @@ impl Niri {
             async_io::block_on(async move {
                 iface
                     .get()
-                    .stop(&server, iface.signal_context().clone())
+                    .stop(server.inner(), iface.signal_emitter().clone())
                     .await
             });
         }
@@ -4545,7 +4658,9 @@ impl Niri {
             }
 
             #[cfg(feature = "dbus")]
-            crate::utils::show_screenshot_notification(image_path);
+            if let Err(err) = crate::utils::show_screenshot_notification(image_path) {
+                warn!("error showing screenshot notification: {err:?}");
+            }
             #[cfg(not(feature = "dbus"))]
             drop(image_path);
         });
@@ -4774,7 +4889,7 @@ impl Niri {
                 };
 
                 async_io::block_on(async move {
-                    if let Err(err) = DisplayConfig::monitors_changed(iface.signal_context()).await
+                    if let Err(err) = DisplayConfig::monitors_changed(iface.signal_emitter()).await
                     {
                         warn!("error emitting MonitorsChanged: {err:?}");
                     }

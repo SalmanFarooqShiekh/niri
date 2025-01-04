@@ -203,6 +203,8 @@ fn render(
         &Action::MaximizeColumn,
         &Action::ConsumeOrExpelWindowLeft,
         &Action::ConsumeOrExpelWindowRight,
+        &Action::ToggleWindowFloating,
+        &Action::SwitchFocusBetweenFloatingAndTiling,
     ]);
 
     // Screenshot is not as important, can omit if not bound.
@@ -378,6 +380,10 @@ fn action_name(action: &Action) -> String {
         Action::MaximizeColumn => String::from("Maximize Column"),
         Action::ConsumeOrExpelWindowLeft => String::from("Consume or Expel Window Left"),
         Action::ConsumeOrExpelWindowRight => String::from("Consume or Expel Window Right"),
+        Action::ToggleWindowFloating => String::from("Move Window Between Floating and Tiling"),
+        Action::SwitchFocusBetweenFloatingAndTiling => {
+            String::from("Switch Focus Between Floating and Tiling")
+        }
         Action::Screenshot => String::from("Take a Screenshot"),
         Action::Spawn(args) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",
@@ -415,6 +421,11 @@ fn key_name(comp_mod: CompositorMod, key: &Key) -> String {
 
     let pretty = match key.trigger {
         Trigger::Keysym(keysym) => prettify_keysym_name(&keysym_get_name(keysym)),
+        Trigger::MouseLeft => String::from("Mouse Left"),
+        Trigger::MouseRight => String::from("Mouse Right"),
+        Trigger::MouseMiddle => String::from("Mouse Middle"),
+        Trigger::MouseBack => String::from("Mouse Back"),
+        Trigger::MouseForward => String::from("Mouse Forward"),
         Trigger::WheelScrollDown => String::from("Wheel Scroll Down"),
         Trigger::WheelScrollUp => String::from("Wheel Scroll Up"),
         Trigger::WheelScrollLeft => String::from("Wheel Scroll Left"),

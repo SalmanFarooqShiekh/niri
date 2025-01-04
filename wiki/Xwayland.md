@@ -3,21 +3,27 @@ However, there are multiple solutions to running X11 apps in niri.
 
 ## Using xwayland-satellite
 
-[xwayland-satellite] is a new project that essentially implements rootless Xwayland in a separate application, without the host compositor's involvement.
+[xwayland-satellite] implements rootless Xwayland in a separate application, without the host compositor's involvement.
+It makes X11 windows appear as normal windows, just like a native Xwayland integration.
 While it is still somewhat experimental, it handles a lot of applications correctly, like Steam, games and Discord.
 
-Build it according to instructions from its README, then run the `xwayland-satellite` binary.
-Now you can start X11 applications on the X11 DISPLAY that it provides:
+Install it from your package manager, or build it according to instructions from its README, then run the `xwayland-satellite` binary.
+Look for a log message like: `Connected to Xwayland on :0`.
+Now you can start X11 applications on this X11 DISPLAY:
 
 ```
 env DISPLAY=:0 flatpak run com.valvesoftware.Steam
 ```
 
-They will appear as normal windows.
+![xwayland-satellite running Steam and Half-Life.](https://github.com/user-attachments/assets/57db8f96-40d4-4621-a389-373c169349a4)
 
-You can also set `DISPLAY` by default for all apps by adding it to the `environment` section of the niri config:
+You can also automatically run it at startup, and set `DISPLAY` by default for all apps by adding it to the `environment` section of the niri config:
 
 ```kdl
+spawn-at-startup "xwayland-satellite"
+// Or, if you built it by hand:
+// spawn-at-startup "~/path/to/code/target/release/xwayland-satellite"
+
 environment {
     DISPLAY ":0"
 }
@@ -28,6 +34,18 @@ environment {
 > Then, you will need to use that DISPLAY number for the `env` command or for the niri `environment` block.
 >
 > You can also force a specific DISPLAY number like so: `xwayland-satellite :12` will start on `DISPLAY=:12`.
+
+## Using the labwc Wayland compositor
+
+[Labwc](https://github.com/labwc/labwc) is a traditional stacking Wayland compositor with Xwayland.
+You can run it as a window, then run X11 apps inside.
+
+1. Install labwc from your distribution packages.
+1. Run it inside niri with the `labwc` command.
+It will open as a new window.
+1. Run an X11 application on the X11 DISPLAY that it provides, e.g. `env DISPLAY=:0 glxgears`
+
+![Labwc running X11 apps.](https://github.com/user-attachments/assets/aecbcecb-f0cb-4909-867f-09d34b5a2d7e)
 
 ## Directly running Xwayland in rootful mode
 

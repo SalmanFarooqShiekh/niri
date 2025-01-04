@@ -1124,6 +1124,11 @@ pub struct Key {
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Trigger {
     Keysym(Keysym),
+    MouseLeft,
+    MouseRight,
+    MouseMiddle,
+    MouseBack,
+    MouseForward,
     WheelScrollDown,
     WheelScrollUp,
     WheelScrollLeft,
@@ -1260,14 +1265,20 @@ pub enum Action {
     FocusMonitorRight,
     FocusMonitorDown,
     FocusMonitorUp,
+    FocusMonitorPrevious,
+    FocusMonitorNext,
     MoveWindowToMonitorLeft,
     MoveWindowToMonitorRight,
     MoveWindowToMonitorDown,
     MoveWindowToMonitorUp,
+    MoveWindowToMonitorPrevious,
+    MoveWindowToMonitorNext,
     MoveColumnToMonitorLeft,
     MoveColumnToMonitorRight,
     MoveColumnToMonitorDown,
     MoveColumnToMonitorUp,
+    MoveColumnToMonitorPrevious,
+    MoveColumnToMonitorNext,
     SetWindowWidth(#[knuffel(argument, str)] SizeChange),
     #[knuffel(skip)]
     SetWindowWidthById {
@@ -1298,6 +1309,8 @@ pub enum Action {
     MoveWorkspaceToMonitorRight,
     MoveWorkspaceToMonitorDown,
     MoveWorkspaceToMonitorUp,
+    MoveWorkspaceToMonitorPrevious,
+    MoveWorkspaceToMonitorNext,
     ToggleWindowFloating,
     #[knuffel(skip)]
     ToggleWindowFloatingById(u64),
@@ -1417,14 +1430,20 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::FocusMonitorRight {} => Self::FocusMonitorRight,
             niri_ipc::Action::FocusMonitorDown {} => Self::FocusMonitorDown,
             niri_ipc::Action::FocusMonitorUp {} => Self::FocusMonitorUp,
+            niri_ipc::Action::FocusMonitorPrevious {} => Self::FocusMonitorPrevious,
+            niri_ipc::Action::FocusMonitorNext {} => Self::FocusMonitorNext,
             niri_ipc::Action::MoveWindowToMonitorLeft {} => Self::MoveWindowToMonitorLeft,
             niri_ipc::Action::MoveWindowToMonitorRight {} => Self::MoveWindowToMonitorRight,
             niri_ipc::Action::MoveWindowToMonitorDown {} => Self::MoveWindowToMonitorDown,
             niri_ipc::Action::MoveWindowToMonitorUp {} => Self::MoveWindowToMonitorUp,
+            niri_ipc::Action::MoveWindowToMonitorPrevious {} => Self::MoveWindowToMonitorPrevious,
+            niri_ipc::Action::MoveWindowToMonitorNext {} => Self::MoveWindowToMonitorNext,
             niri_ipc::Action::MoveColumnToMonitorLeft {} => Self::MoveColumnToMonitorLeft,
             niri_ipc::Action::MoveColumnToMonitorRight {} => Self::MoveColumnToMonitorRight,
             niri_ipc::Action::MoveColumnToMonitorDown {} => Self::MoveColumnToMonitorDown,
             niri_ipc::Action::MoveColumnToMonitorUp {} => Self::MoveColumnToMonitorUp,
+            niri_ipc::Action::MoveColumnToMonitorPrevious {} => Self::MoveColumnToMonitorPrevious,
+            niri_ipc::Action::MoveColumnToMonitorNext {} => Self::MoveColumnToMonitorNext,
             niri_ipc::Action::SetWindowWidth { id: None, change } => Self::SetWindowWidth(change),
             niri_ipc::Action::SetWindowWidth {
                 id: Some(id),
@@ -1456,6 +1475,10 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::MoveWorkspaceToMonitorRight {} => Self::MoveWorkspaceToMonitorRight,
             niri_ipc::Action::MoveWorkspaceToMonitorDown {} => Self::MoveWorkspaceToMonitorDown,
             niri_ipc::Action::MoveWorkspaceToMonitorUp {} => Self::MoveWorkspaceToMonitorUp,
+            niri_ipc::Action::MoveWorkspaceToMonitorPrevious {} => {
+                Self::MoveWorkspaceToMonitorPrevious
+            }
+            niri_ipc::Action::MoveWorkspaceToMonitorNext {} => Self::MoveWorkspaceToMonitorNext,
             niri_ipc::Action::ToggleDebugTint {} => Self::ToggleDebugTint,
             niri_ipc::Action::DebugToggleOpaqueRegions {} => Self::DebugToggleOpaqueRegions,
             niri_ipc::Action::DebugToggleDamage {} => Self::DebugToggleDamage,
@@ -1618,6 +1641,8 @@ pub struct DebugConfig {
     pub disable_cursor_plane: bool,
     #[knuffel(child)]
     pub disable_direct_scanout: bool,
+    #[knuffel(child)]
+    pub restrict_primary_scanout_to_matching_format: bool,
     #[knuffel(child, unwrap(argument))]
     pub render_drm_device: Option<PathBuf>,
     #[knuffel(child)]
@@ -2924,7 +2949,17 @@ impl FromStr for Key {
             }
         }
 
-        let trigger = if key.eq_ignore_ascii_case("WheelScrollDown") {
+        let trigger = if key.eq_ignore_ascii_case("MouseLeft") {
+            Trigger::MouseLeft
+        } else if key.eq_ignore_ascii_case("MouseRight") {
+            Trigger::MouseRight
+        } else if key.eq_ignore_ascii_case("MouseMiddle") {
+            Trigger::MouseMiddle
+        } else if key.eq_ignore_ascii_case("MouseBack") {
+            Trigger::MouseBack
+        } else if key.eq_ignore_ascii_case("MouseForward") {
+            Trigger::MouseForward
+        } else if key.eq_ignore_ascii_case("WheelScrollDown") {
             Trigger::WheelScrollDown
         } else if key.eq_ignore_ascii_case("WheelScrollUp") {
             Trigger::WheelScrollUp

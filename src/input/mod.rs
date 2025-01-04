@@ -768,36 +768,42 @@ impl State {
             Action::FocusColumnLeft => {
                 self.niri.layout.focus_left();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusColumnRight => {
                 self.niri.layout.focus_right();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusColumnFirst => {
                 self.niri.layout.focus_column_first();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusColumnLast => {
                 self.niri.layout.focus_column_last();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusColumnRightOrFirst => {
                 self.niri.layout.focus_column_right_or_first();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusColumnLeftOrLast => {
                 self.niri.layout.focus_column_left_or_last();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
@@ -814,6 +820,7 @@ impl State {
                     self.niri.layout.focus_up();
                     self.maybe_warp_cursor_to_focus();
                 }
+                self.niri.layer_shell_on_demand_focus = None;
 
                 // FIXME: granular
                 self.niri.queue_redraw_all();
@@ -831,6 +838,7 @@ impl State {
                     self.niri.layout.focus_down();
                     self.maybe_warp_cursor_to_focus();
                 }
+                self.niri.layer_shell_on_demand_focus = None;
 
                 // FIXME: granular
                 self.niri.queue_redraw_all();
@@ -848,6 +856,7 @@ impl State {
                     self.niri.layout.focus_left();
                     self.maybe_warp_cursor_to_focus();
                 }
+                self.niri.layer_shell_on_demand_focus = None;
 
                 // FIXME: granular
                 self.niri.queue_redraw_all();
@@ -865,6 +874,7 @@ impl State {
                     self.niri.layout.focus_right();
                     self.maybe_warp_cursor_to_focus();
                 }
+                self.niri.layer_shell_on_demand_focus = None;
 
                 // FIXME: granular
                 self.niri.queue_redraw_all();
@@ -872,48 +882,56 @@ impl State {
             Action::FocusWindowDown => {
                 self.niri.layout.focus_down();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowUp => {
                 self.niri.layout.focus_up();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowDownOrColumnLeft => {
                 self.niri.layout.focus_down_or_left();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowDownOrColumnRight => {
                 self.niri.layout.focus_down_or_right();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowUpOrColumnLeft => {
                 self.niri.layout.focus_up_or_left();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowUpOrColumnRight => {
                 self.niri.layout.focus_up_or_right();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowOrWorkspaceDown => {
                 self.niri.layout.focus_window_or_workspace_down();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWindowOrWorkspaceUp => {
                 self.niri.layout.focus_window_or_workspace_up();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
@@ -1042,12 +1060,14 @@ impl State {
             Action::FocusWorkspaceDown => {
                 self.niri.layout.switch_workspace_down();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
             Action::FocusWorkspaceUp => {
                 self.niri.layout.switch_workspace_up();
                 self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
@@ -1076,6 +1096,7 @@ impl State {
                         }
                         self.maybe_warp_cursor_to_focus();
                     }
+                    self.niri.layer_shell_on_demand_focus = None;
 
                     // FIXME: granular
                     self.niri.queue_redraw_all();
@@ -1083,6 +1104,8 @@ impl State {
             }
             Action::FocusWorkspacePrevious => {
                 self.niri.layout.switch_workspace_previous();
+                self.maybe_warp_cursor_to_focus();
+                self.niri.layer_shell_on_demand_focus = None;
                 // FIXME: granular
                 self.niri.queue_redraw_all();
             }
@@ -1160,6 +1183,7 @@ impl State {
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
+                    self.niri.layer_shell_on_demand_focus = None;
                 }
             }
             Action::FocusMonitorRight => {
@@ -1168,6 +1192,7 @@ impl State {
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
+                    self.niri.layer_shell_on_demand_focus = None;
                 }
             }
             Action::FocusMonitorDown => {
@@ -1176,6 +1201,7 @@ impl State {
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
+                    self.niri.layer_shell_on_demand_focus = None;
                 }
             }
             Action::FocusMonitorUp => {
@@ -1184,6 +1210,25 @@ impl State {
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
                     }
+                    self.niri.layer_shell_on_demand_focus = None;
+                }
+            }
+            Action::FocusMonitorPrevious => {
+                if let Some(output) = self.niri.output_previous() {
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                    self.niri.layer_shell_on_demand_focus = None;
+                }
+            }
+            Action::FocusMonitorNext => {
+                if let Some(output) = self.niri.output_next() {
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                    self.niri.layer_shell_on_demand_focus = None;
                 }
             }
             Action::MoveWindowToMonitorLeft => {
@@ -1222,6 +1267,24 @@ impl State {
                     }
                 }
             }
+            Action::MoveWindowToMonitorPrevious => {
+                if let Some(output) = self.niri.output_previous() {
+                    self.niri.layout.move_to_output(None, &output, None);
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
+            Action::MoveWindowToMonitorNext => {
+                if let Some(output) = self.niri.output_next() {
+                    self.niri.layout.move_to_output(None, &output, None);
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
             Action::MoveColumnToMonitorLeft => {
                 if let Some(output) = self.niri.output_left() {
                     self.niri.layout.move_column_to_output(&output);
@@ -1251,6 +1314,24 @@ impl State {
             }
             Action::MoveColumnToMonitorUp => {
                 if let Some(output) = self.niri.output_up() {
+                    self.niri.layout.move_column_to_output(&output);
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
+            Action::MoveColumnToMonitorPrevious => {
+                if let Some(output) = self.niri.output_previous() {
+                    self.niri.layout.move_column_to_output(&output);
+                    self.niri.layout.focus_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
+            Action::MoveColumnToMonitorNext => {
+                if let Some(output) = self.niri.output_next() {
                     self.niri.layout.move_column_to_output(&output);
                     self.niri.layout.focus_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
@@ -1322,6 +1403,22 @@ impl State {
             }
             Action::MoveWorkspaceToMonitorUp => {
                 if let Some(output) = self.niri.output_up() {
+                    self.niri.layout.move_workspace_to_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
+            Action::MoveWorkspaceToMonitorPrevious => {
+                if let Some(output) = self.niri.output_previous() {
+                    self.niri.layout.move_workspace_to_output(&output);
+                    if !self.maybe_warp_cursor_to_focus_centered() {
+                        self.move_cursor_to_output(&output);
+                    }
+                }
+            }
+            Action::MoveWorkspaceToMonitorNext => {
+                if let Some(output) = self.niri.output_next() {
                     self.niri.layout.move_workspace_to_output(&output);
                     if !self.maybe_warp_cursor_to_focus_centered() {
                         self.move_cursor_to_output(&output);
@@ -1656,11 +1753,43 @@ impl State {
 
         let serial = SERIAL_COUNTER.next_serial();
 
-        let button = event.button_code();
+        let button = event.button();
+
+        let button_code = event.button_code();
 
         let button_state = event.state();
 
+        // Ignore release events for mouse clicks that triggered a bind.
+        if self.niri.suppressed_buttons.remove(&button_code) {
+            return;
+        }
+
         if ButtonState::Pressed == button_state {
+            let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+            let modifiers = modifiers_from_state(mods);
+
+            if self.niri.mods_with_mouse_binds.contains(&modifiers) {
+                let comp_mod = self.backend.mod_key();
+
+                if let Some(bind) = match button {
+                    Some(MouseButton::Left) => Some(Trigger::MouseLeft),
+                    Some(MouseButton::Right) => Some(Trigger::MouseRight),
+                    Some(MouseButton::Middle) => Some(Trigger::MouseMiddle),
+                    Some(MouseButton::Back) => Some(Trigger::MouseBack),
+                    Some(MouseButton::Forward) => Some(Trigger::MouseForward),
+                    _ => None,
+                }
+                .and_then(|trigger| {
+                    let config = self.niri.config.borrow();
+                    let bindings = &config.binds;
+                    find_configured_bind(bindings, comp_mod, trigger, mods)
+                }) {
+                    self.niri.suppressed_buttons.insert(button_code);
+                    self.handle_bind(bind.clone());
+                    return;
+                };
+            }
+
             // We received an event for the regular pointer, so show it now.
             self.niri.pointer_hidden = false;
             self.niri.tablet_cursor_location = None;
@@ -1669,8 +1798,7 @@ impl State {
                 let window = mapped.window.clone();
 
                 // Check if we need to start an interactive move.
-                if event.button() == Some(MouseButton::Left) && !pointer.is_grabbed() {
-                    let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+                if button == Some(MouseButton::Left) && !pointer.is_grabbed() {
                     let mod_down = match self.backend.mod_key() {
                         CompositorMod::Super => mods.logo,
                         CompositorMod::Alt => mods.alt,
@@ -1689,7 +1817,7 @@ impl State {
                         ) {
                             let start_data = PointerGrabStartData {
                                 focus: None,
-                                button: event.button_code(),
+                                button: button_code,
                                 location,
                             };
                             let grab = MoveGrab::new(start_data, window.clone());
@@ -1701,8 +1829,7 @@ impl State {
                     }
                 }
                 // Check if we need to start an interactive resize.
-                else if event.button() == Some(MouseButton::Right) && !pointer.is_grabbed() {
-                    let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+                else if button == Some(MouseButton::Right) && !pointer.is_grabbed() {
                     let mod_down = match self.backend.mod_key() {
                         CompositorMod::Super => mods.logo,
                         CompositorMod::Alt => mods.alt,
@@ -1762,7 +1889,7 @@ impl State {
                             {
                                 let start_data = PointerGrabStartData {
                                     focus: None,
-                                    button: event.button_code(),
+                                    button: button_code,
                                     location,
                                 };
                                 let grab = ResizeGrab::new(start_data, window.clone());
@@ -1786,8 +1913,7 @@ impl State {
                 self.niri.queue_redraw_all();
             }
 
-            if event.button() == Some(MouseButton::Middle) && !pointer.is_grabbed() {
-                let mods = self.niri.seat.get_keyboard().unwrap().modifier_state();
+            if button == Some(MouseButton::Middle) && !pointer.is_grabbed() {
                 let mod_down = match self.backend.mod_key() {
                     CompositorMod::Super => mods.logo,
                     CompositorMod::Alt => mods.alt,
@@ -1797,7 +1923,7 @@ impl State {
                         let location = pointer.current_location();
                         let start_data = PointerGrabStartData {
                             focus: None,
-                            button: event.button_code(),
+                            button: button_code,
                             location,
                         };
                         let grab = SpatialMovementGrab::new(start_data, output);
@@ -1817,7 +1943,7 @@ impl State {
             self.niri.focus_layer_surface_if_on_demand(layer_under);
         }
 
-        if let Some(button) = event.button() {
+        if let Some(button) = button {
             let pos = pointer.current_location();
             if let Some((output, _)) = self.niri.output_under(pos) {
                 let output = output.clone();
@@ -1845,7 +1971,7 @@ impl State {
         pointer.button(
             self,
             &ButtonEvent {
-                button,
+                button: button_code,
                 state: button_state,
                 serial,
                 time: event.time_msec(),
@@ -3108,6 +3234,20 @@ pub fn mods_with_binds(
     }
 
     rv
+}
+
+pub fn mods_with_mouse_binds(comp_mod: CompositorMod, binds: &Binds) -> HashSet<Modifiers> {
+    mods_with_binds(
+        comp_mod,
+        binds,
+        &[
+            Trigger::MouseLeft,
+            Trigger::MouseRight,
+            Trigger::MouseMiddle,
+            Trigger::MouseBack,
+            Trigger::MouseForward,
+        ],
+    )
 }
 
 pub fn mods_with_wheel_binds(comp_mod: CompositorMod, binds: &Binds) -> HashSet<Modifiers> {
